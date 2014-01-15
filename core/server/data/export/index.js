@@ -2,8 +2,9 @@ var when      = require('when'),
     _         = require('underscore'),
     migration = require('../migration'),
     knex      = require('../../models/base').knex,
-    schema    = require('../schema'),
+    schema    = require('../schema').tables,
 
+    excludedTables = ['sessions'],
     exporter;
 
 exporter = function () {
@@ -13,7 +14,9 @@ exporter = function () {
         var version = results[0],
             tables = results[1],
             selectOps = _.map(tables, function (name) {
-                return knex(name).select();
+                if (excludedTables.indexOf(name) < 0) {
+                    return knex(name).select();
+                }
             });
 
         return when.all(selectOps).then(function (tableData) {

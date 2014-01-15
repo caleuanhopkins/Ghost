@@ -161,6 +161,14 @@
             Ghost.on('urlchange', function () {
                 self.clearEverything();
             });
+            shortcut.add("ESC", function () {
+                // Make sure there isn't currently an open modal, as the escape key should close that first.
+                // This is a temporary solution to enable closing extra-long notifications, and should be refactored
+                // into something more robust in future
+                if ($('.js-modal').length < 1) {
+                    self.clearEverything();
+                }
+            });
         },
         events: {
             'animationend .js-notification': 'removeItem',
@@ -205,7 +213,7 @@
                     headers: {
                         'X-CSRF-Token': $("meta[name='csrf-param']").attr('content')
                     },
-                    url: Ghost.settings.apiRoot + '/notifications/' + $(self).find('.close').data('id')
+                    url: Ghost.paths.apiRoot + '/notifications/' + $(self).find('.close').data('id')
                 }).done(function (result) {
                     /*jslint unparam:true*/
                     bbSelf.$el.slideUp(250, function () {
@@ -239,7 +247,7 @@
                 headers: {
                     'X-CSRF-Token': $("meta[name='csrf-param']").attr('content')
                 },
-                url: Ghost.settings.apiRoot + '/notifications/' + $(self).data('id')
+                url: Ghost.paths.apiRoot + '/notifications/' + $(self).data('id')
             }).done(function (result) {
                 /*jslint unparam:true*/
                 var height = bbSelf.$('.js-notification').outerHeight(true),

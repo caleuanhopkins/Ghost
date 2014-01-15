@@ -2,16 +2,14 @@
 var _           = require('underscore'),
     when        = require('when'),
     errors      = require('../errorHandling'),
-    ghostApi,
+    api         = require('../api'),
     loader      = require('./loader'),
-    GhostPlugin = require('./GhostPlugin');
+    // Holds the available plugins
+    availablePlugins = {};
+
 
 function getInstalledPlugins() {
-    if (!ghostApi) {
-        ghostApi = require('../api');
-    }
-
-    return ghostApi.settings.read('installedPlugins').then(function (installed) {
+    return api.settings.read('installedPlugins').then(function (installed) {
         installed.value = installed.value || '[]';
 
         try {
@@ -28,19 +26,19 @@ function saveInstalledPlugins(installedPlugins) {
     return getInstalledPlugins().then(function (currentInstalledPlugins) {
         var updatedPluginsInstalled = _.uniq(installedPlugins.concat(currentInstalledPlugins));
 
-        return ghostApi.settings.edit('installedPlugins', updatedPluginsInstalled);
+        return api.settings.edit('installedPlugins', updatedPluginsInstalled);
     });
 }
 
 module.exports = {
-    GhostPlugin: GhostPlugin,
-
-    init: function (ghost) {
+    init: function () {
         var pluginsToLoad;
 
         try {
             // We have to parse the value because it's a string
-            pluginsToLoad = JSON.parse(ghost.settings('activePlugins')) || [];
+            api.settings.read('activePlugins').then(function (aPlugins) {
+                pluginsToLoad = JSON.parse(aPlugins.value) || [];
+            });
         } catch (e) {
             errors.logError(
                 'Failed to parse activePlugins setting value: ' + e.message,
@@ -62,14 +60,14 @@ module.exports = {
                 loadPromises = _.map(pluginsToLoad, function (plugin) {
                     // If already installed, just activate the plugin
                     if (_.contains(installedPlugins, plugin)) {
-                        return loader.activatePluginByName(plugin, ghost).then(function (loadedPlugin) {
+                        return loader.activatePluginByName(plugin).then(function (loadedPlugin) {
                             return recordLoadedPlugin(plugin, loadedPlugin);
                         });
                     }
 
                     // Install, then activate the plugin
-                    return loader.installPluginByName(plugin, ghost).then(function () {
-                        return loader.activatePluginByName(plugin, ghost);
+                    return loader.installPluginByName(plugin).then(function () {
+                        return loader.activatePluginByName(plugin);
                     }).then(function (loadedPlugin) {
                         return recordLoadedPlugin(plugin, loadedPlugin);
                     });
@@ -80,7 +78,7 @@ module.exports = {
                 return saveInstalledPlugins(_.keys(loadedPlugins));
             }).then(function () {
                 // Extend the loadedPlugins onto the available plugins
-                _.extend(ghost.availablePlugins, loadedPlugins);
+                _.extend(availablePlugins, loadedPlugins);
             }).otherwise(function (err) {
                 errors.logError(
                     err.message || err,
@@ -89,5 +87,6 @@ module.exports = {
                 );
             });
         });
-    }
+    },
+    availablePlugins: availablePlugins
 };
