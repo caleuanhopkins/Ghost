@@ -19,7 +19,7 @@ CasperTest.begin("Ghost edit draft flow works correctly", 8, function suite(test
     });
 
     casper.thenClick('.js-publish-button');
-    casper.waitForResource(/posts/);
+    casper.waitForResource(/posts\/$/);
 
     casper.waitForSelector('.notification-success', function onSuccess() {
         test.assert(true, 'Got success notification');
@@ -44,7 +44,7 @@ CasperTest.begin("Ghost edit draft flow works correctly", 8, function suite(test
     });
 
     casper.thenClick('.js-publish-button');
-    casper.waitForResource(/posts/);
+    casper.waitForResource(/posts\/[0-9]+\/$/);
 
     casper.waitForSelector('.notification-success', function onSuccess() {
         test.assert(true, 'Got success notification');

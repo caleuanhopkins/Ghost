@@ -60,6 +60,18 @@ describe("Showdown client side converter", function () {
         });
     });
 
+    it("should not escape double underscores at the beginning of a line", function () {
+        var testPhrases = [
+                {input: "\n__test__\n", output: /^<p><strong>test<\/strong><\/p>$/}
+            ],
+            processedMarkup;
+
+        testPhrases.forEach(function (testPhrase) {
+            processedMarkup = converter.makeHtml(testPhrase.input);
+            processedMarkup.should.match(testPhrase.output);
+        });
+    });
+
     it("should not treat pre blocks with pre-text differently", function () {
         var testPhrases = [
                 {input: "<pre>\nthis is `a\\_test` and this\\_too and finally_this_is\n</pre>", output: /^<pre>\nthis is `a\\_test` and this\\_too and finally_this_is\n<\/pre>$/},
@@ -95,7 +107,9 @@ describe("Showdown client side converter", function () {
     it("should turn newlines into br tags in simple cases", function () {
         var testPhrases = [
                 {input: "fizz\nbuzz", output: /^<p>fizz <br \/>\nbuzz<\/p>$/},
-                {input: "Hello world\nIt's a fine day", output: /^<p>Hello world <br \/>\nIt\'s a fine day<\/p>$/}
+                {input: "Hello world\nIt's a fine day", output: /^<p>Hello world <br \/>\nIt\'s a fine day<\/p>$/},
+                {input: "\"first\nsecond", output: /^<p>\"first <br \/>\nsecond<\/p>$/},
+                {input: "\'first\nsecond", output: /^<p>\'first <br \/>\nsecond<\/p>$/}
             ],
             processedMarkup;
 

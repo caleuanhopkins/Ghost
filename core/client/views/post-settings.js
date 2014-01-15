@@ -21,15 +21,18 @@
                 this.listenTo(this.model, 'change:status', this.render);
                 this.listenTo(this.model, 'change:published_at', this.render);
                 this.listenTo(this.model, 'change:page', this.render);
+                this.listenTo(this.model, 'change:title', this.updateSlugPlaceholder);
             }
         },
 
         render: function () {
             var slug = this.model ? this.model.get('slug') : '',
                 pubDate = this.model ? this.model.get('published_at') : 'Not Published',
-                $pubDateEl = this.$('.post-setting-date');
+                $pubDateEl = this.$('.post-setting-date'),
+                $postSettingSlugEl = this.$('.post-setting-slug'),
+                publishedDateFormat = 'DD MMM YY @ HH:mm';
 
-            $('.post-setting-slug').val(slug);
+            $postSettingSlugEl.val(slug);
 
             // Update page status test if already a page.
             if (this.model && this.model.get('page')) {
@@ -38,7 +41,10 @@
 
             // Insert the published date, and make it editable if it exists.
             if (this.model && this.model.get('published_at')) {
-                pubDate = moment(pubDate).format('DD MMM YY HH:mm');
+                pubDate = moment(pubDate).format(publishedDateFormat);
+                $pubDateEl.attr('placeholder', '');
+            } else {
+                $pubDateEl.attr('placeholder', moment().format(publishedDateFormat));
             }
 
             if (this.model && this.model.get('id')) {
@@ -46,22 +52,65 @@
                 this.$('.delete').removeClass('hidden');
             }
 
+            // Apply different style for model's that aren't
+            // yet persisted to the server.
+            // Mostly we're hiding the delete post UI
+            if (this.model.id === undefined) {
+                this.$el.addClass('unsaved');
+            } else {
+                this.$el.removeClass('unsaved');
+            }
+
             $pubDateEl.val(pubDate);
+        },
+
+        // Requests a new slug when the title was changed
+        updateSlugPlaceholder: function () {
+            var title = this.model.get('title'),
+                $postSettingSlugEl = this.$('.post-setting-slug');
+
+            // If there's a title present we want to
+            // validate it against existing slugs in the db
+            // and then update the placeholder value.
+            if (title) {
+                $.ajax({
+                    url: Ghost.paths.apiRoot + '/posts/getSlug/' + encodeURIComponent(title) + '/',
+                    success: function (result) {
+                        $postSettingSlugEl.attr('placeholder', result);
+                    }
+                });
+            } else {
+                // If there's no title set placeholder to blank
+                // and don't make an ajax request to server
+                // for a proper slug (as there won't be any).
+                $postSettingSlugEl.attr('placeholder', '');
+                return;
+            }
         },
 
         selectSlug: function (e) {
             e.currentTarget.select();
         },
 
-        editSlug: function (e) {
+        editSlug: _.debounce(function (e) {
             e.preventDefault();
             var self = this,
                 slug = self.model.get('slug'),
                 slugEl = e.currentTarget,
                 newSlug = slugEl.value;
 
-            // Ignore empty or unchanged slugs
-            if (newSlug.length === 0 || slug === newSlug) {
+            // If the model doesn't currently
+            // exist on the server (aka has no id)
+            // then just update the model's value
+            if (self.model.id === undefined) {
+                this.model.set({
+                    slug: newSlug
+                });
+                return;
+            }
+
+            // Ignore unchanged slugs
+            if (slug === newSlug) {
                 slugEl.value = slug === undefined ? '' : slug;
                 return;
             }
@@ -88,13 +137,13 @@
                     });
                 }
             });
-        },
+        }, 500),
 
-        editDate: function (e) {
+        editDate: _.debounce(function (e) {
             e.preventDefault();
             var self = this,
                 parseDateFormats = ['DD MMM YY HH:mm', 'DD MMM YYYY HH:mm', 'DD/MM/YY HH:mm', 'DD/MM/YYYY HH:mm', 'DD-MM-YY HH:mm', 'DD-MM-YYYY HH:mm'],
-                displayDateFormat = 'DD MMM YY HH:mm',
+                displayDateFormat = 'DD MMM YY @ HH:mm',
                 errMessage = '',
                 pubDate = self.model.get('published_at'),
                 pubDateEl = e.currentTarget,
@@ -102,30 +151,40 @@
                 pubDateMoment,
                 newPubDateMoment;
 
-            // Check for missing time stamp on current model
-            // If no time specified, add a 12:00
-            if (!pubDate.slice(-5).match(/\d+:\d\d/)) {
-                pubDate += " 12:00";
+            // if there is no new pub date do nothing
+            if (!newPubDate) {
+                return;
             }
 
-            pubDateMoment = moment(pubDate, parseDateFormats);
-
-            // Same for new date
-            if (!newPubDate.slice(-5).match(/\d+:\d\d/)) {
+            // Check for missing time stamp on new data
+            // If no time specified, add a 12:00
+            if (newPubDate && !newPubDate.slice(-5).match(/\d+:\d\d/)) {
                 newPubDate += " 12:00";
             }
 
             newPubDateMoment = moment(newPubDate, parseDateFormats);
 
-            // Ensure the published date has changed
-            if (newPubDate.length === 0 || pubDateMoment.isSame(newPubDateMoment)) {
-                pubDateEl.value = pubDate === undefined ? 'Not Published' : pubDateMoment.format(displayDateFormat);
-                return;
+            // If there was a published date already set
+            if (pubDate) {
+                 // Check for missing time stamp on current model
+                // If no time specified, add a 12:00
+                if (!pubDate.slice(-5).match(/\d+:\d\d/)) {
+                    pubDate += " 12:00";
+                }
+
+                pubDateMoment = moment(pubDate, parseDateFormats);
+
+                 // Ensure the published date has changed
+                if (newPubDate.length === 0 || pubDateMoment.isSame(newPubDateMoment)) {
+                    // If it wasn't, reset it and return
+                    pubDateEl.value = pubDateMoment.format(displayDateFormat);
+                    return;
+                }
             }
 
             // Validate new Published date
             if (!newPubDateMoment.isValid()) {
-                errMessage = 'Published Date must be a valid date with format: DD MMM YY HH:mm (e.g. 6 Dec 14 15:00)';
+                errMessage = 'Published Date must be a valid date with format: DD MMM YY @ HH:mm (e.g. 6 Dec 14 @ 15:00)';
             }
 
             if (newPubDateMoment.diff(new Date(), 'h') > 0) {
@@ -141,7 +200,17 @@
                 });
 
                 // Reset back to original value and return
-                pubDateEl.value = pubDateMoment.format(displayDateFormat);
+                pubDateEl.value = pubDateMoment ? pubDateMoment.format(displayDateFormat) : '';
+                return;
+            }
+
+            // If the model doesn't currently
+            // exist on the server (aka has no id)
+            // then just update the model's value
+            if (self.model.id === undefined) {
+                this.model.set({
+                    published_at: newPubDateMoment.toDate()
+                });
                 return;
             }
 
@@ -167,11 +236,21 @@
                 }
             });
 
-        },
+        }, 500),
 
-        toggleStaticPage: function (e) {
+        toggleStaticPage: _.debounce(function (e) {
             var pageEl = $(e.currentTarget),
-                page = this.model ? !this.model.get('page') : false;
+                page = pageEl.prop('checked');
+
+            // Don't try to save
+            // if the model doesn't currently
+            // exist on the server
+            if (this.model.id === undefined) {
+                this.model.set({
+                    page: page
+                });
+                return;
+            }
 
             this.model.save({
                 page: page
@@ -194,11 +273,16 @@
                     });
                 }
             });
-        },
+        }, 500),
 
         deletePost: function (e) {
             e.preventDefault();
             var self = this;
+            // You can't delete a post
+            // that hasn't yet been saved
+            if (this.model.id === undefined) {
+                return;
+            }
             this.addSubview(new Ghost.Views.Modal({
                 model: {
                     options: {
@@ -211,7 +295,7 @@
                                     }).then(function () {
                                         // Redirect to content screen if deleting post from editor.
                                         if (window.location.pathname.indexOf('editor') > -1) {
-                                            window.location = '/ghost/content/';
+                                            window.location = Ghost.paths.subdir + '/ghost/content/';
                                         }
                                         Ghost.notifications.addItem({
                                             type: 'success',
@@ -241,7 +325,8 @@
                     },
                     content: {
                         template: 'blank',
-                        title: 'Are you sure you want to delete this post?'
+                        title: 'Are you sure you want to delete this post?',
+                        text: '<p>This is permanent! No backups, no restores, no magic undo button. <br /> We warned you, ok?</p>'
                     }
                 }
             }));

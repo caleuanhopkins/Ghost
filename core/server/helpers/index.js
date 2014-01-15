@@ -1,16 +1,26 @@
-var _               = require('underscore'),
-    moment          = require('moment'),
-    downsize        = require('downsize'),
-    when            = require('when'),
+var downsize        = require('downsize'),
     hbs             = require('express-hbs'),
+    moment          = require('moment'),
+    path            = require('path'),
+    polyglot        = require('node-polyglot').instance,
+    _               = require('underscore'),
+    when            = require('when'),
+
+    api             = require('../api'),
+    config          = require('../config'),
     errors          = require('../errorHandling'),
-    models          = require('../models'),
-    packageInfo     = require('../../../package.json'),
-    version         = packageInfo.version,
-    scriptTemplate  = _.template("<script src='/built/scripts/<%= name %>?v=<%= version %>'></script>"),
+    filters         = require('../filters'),
+    template        = require('./template'),
+    schema          = require('../data/schema').checks,
+
+    assetTemplate   = _.template('<%= source %>?v=<%= version %>'),
+    scriptTemplate  = _.template('<script src="<%= source %>?v=<%= version %>"></script>'),
     isProduction    = process.env.NODE_ENV === 'production',
+
     coreHelpers     = {},
     registerHelpers;
+
+
 
 /**
  * [ description]
@@ -30,6 +40,9 @@ coreHelpers.date = function (context, options) {
             context = this.published_at;
         }
     }
+
+    // ensure that context is undefined, not null, as that can cause errors
+    context = context === null ? undefined : context;
 
     var f = options.hash.format || 'MMM Do, YYYY',
         timeago = options.hash.timeago,
@@ -67,7 +80,7 @@ coreHelpers.encode = function (context, str) {
 //
 coreHelpers.pageUrl = function (context, block) {
     /*jslint unparam:true*/
-    return context === 1 ? '/' : ('/page/' + context + '/');
+    return config.paths().subdir + (context === 1 ? '/' : ('/page/' + context + '/'));
 };
 
 // ### URL helper
@@ -80,17 +93,48 @@ coreHelpers.pageUrl = function (context, block) {
 // i.e. If inside a post context will return post permalink
 // absolute flag outputs absolute URL, else URL is relative
 coreHelpers.url = function (options) {
-    var output = '';
+    var absolute = options && options.hash.absolute;
 
-    if (options && options.hash.absolute) {
-        output += coreHelpers.ghost.config().url;
+    if (schema.isPost(this)) {
+        return config.paths.urlForPost(api.settings, this, absolute);
     }
 
-    if (models.isPost(this)) {
-        output += '/' + this.slug + '/';
+    return when(config.paths.urlFor(this, absolute));
+};
+
+// ### Asset helper
+//
+// *Usage example:*
+// `{{asset "css/screen.css"}}`
+// `{{asset "css/screen.css" ghost="true"}}`
+// Returns the path to the specified asset. The ghost
+// flag outputs the asset path for the Ghost admin
+coreHelpers.asset = function (context, options) {
+    var output = '',
+        isAdmin = options && options.hash && options.hash.ghost;
+
+    output += config.paths().subdir + '/';
+
+    if (!context.match(/^favicon\.ico$/) && !context.match(/^shared/) && !context.match(/^asset/)) {
+        if (isAdmin) {
+            output += 'ghost/';
+        } else {
+            output += 'assets/';
+        }
     }
 
-    return output;
+    // Get rid of any leading slash on the context
+    context = context.replace(/^\//, '');
+    output += context;
+
+    if (!context.match(/^favicon\.ico$/)) {
+        output = assetTemplate({
+            source: output,
+            version: coreHelpers.assetHash
+        });
+    }
+
+    return new hbs.handlebars.SafeString(output);
 };
 
 // ### Author Helper
@@ -135,8 +179,8 @@ coreHelpers.tags = function (options) {
 //
 // *Usage example:*
 // `{{content}}`
-// `{{content words=20}}`
-// `{{content characters=256}}`
+// `{{content words="20"}}`
+// `{{content characters="256"}}`
 //
 // Turns content html into a safestring so that the user doesn't have to
 // escape it or tell handlebars to leave it alone with a triple-brace.
@@ -148,8 +192,17 @@ coreHelpers.tags = function (options) {
 coreHelpers.content = function (options) {
     var truncateOptions = (options || {}).hash || {};
     truncateOptions = _.pick(truncateOptions, ['words', 'characters']);
+    _.keys(truncateOptions).map(function (key) {
+        truncateOptions[key] = parseInt(truncateOptions[key], 10);
+    });
 
-    if (truncateOptions.words || truncateOptions.characters) {
+    if (truncateOptions.hasOwnProperty('words') || truncateOptions.hasOwnProperty('characters')) {
+        // Due to weirdness in downsize the 'words' option
+        // must be passed as a string. refer to #1796
+        // TODO: when downsize fixes this quirk remove this hack.
+        if (truncateOptions.hasOwnProperty('words')) {
+            truncateOptions.words = truncateOptions.words.toString();
+        }
         return new hbs.handlebars.SafeString(
             downsize(this.html, truncateOptions)
         );
@@ -162,12 +215,12 @@ coreHelpers.content = function (options) {
 //
 // *Usage example:*
 // `{{excerpt}}`
-// `{{excerpt words=50}}`
-// `{{excerpt characters=256}}`
+// `{{excerpt words="50"}}`
+// `{{excerpt characters="256"}}`
 //
 // Attempts to remove all HTML from the string, and then shortens the result according to the provided option.
 //
-// Defaults to words=50
+// Defaults to words="50"
 //
 // **returns** SafeString truncated, HTML-free content.
 //
@@ -176,6 +229,9 @@ coreHelpers.excerpt = function (options) {
         excerpt;
 
     truncateOptions = _.pick(truncateOptions, ['words', 'characters']);
+    _.keys(truncateOptions).map(function (key) {
+        truncateOptions[key] = parseInt(truncateOptions[key], 10);
+    });
 
     /*jslint regexp:true */
     excerpt = String(this.html).replace(/<\/?[^>]+>/gi, '');
@@ -198,8 +254,8 @@ coreHelpers.excerpt = function (options) {
 // Returns the config value for fileStorage.
 coreHelpers.fileStorage = function (context, options) {
     /*jslint unparam:true*/
-    if (coreHelpers.ghost.config().hasOwnProperty('fileStorage')) {
-        return coreHelpers.ghost.config().fileStorage.toString();
+    if (config().hasOwnProperty('fileStorage')) {
+        return config().fileStorage.toString();
     }
     return "true";
 };
@@ -222,8 +278,8 @@ coreHelpers.ghostScriptTags = function () {
 
     scriptFiles = _.map(scriptFiles, function (fileName) {
         return scriptTemplate({
-            name: fileName,
-            version: version
+            source: config.paths().subdir + '/ghost/scripts/' + fileName,
+            version: coreHelpers.assetHash
         });
     });
 
@@ -231,7 +287,7 @@ coreHelpers.ghostScriptTags = function () {
 };
 
 /*
- * Asynchronous Theme Helpers (Registered with ghost.registerAsyncThemeHelper)
+ * Asynchronous Theme Helpers (Registered with registerAsyncThemeHelper)
  */
 
 coreHelpers.body_class = function (options) {
@@ -240,9 +296,9 @@ coreHelpers.body_class = function (options) {
         tags = this.post && this.post.tags ? this.post.tags : this.tags || [],
         page = this.post && this.post.page ? this.post.page : this.page || false;
 
-    if (_.isString(this.path) && this.path.match(/\/page/)) {
+    if (_.isString(this.relativeUrl) && this.relativeUrl.match(/\/page/)) {
         classes.push('archive-template');
-    } else if (!this.path || this.path === '/' || this.path === '') {
+    } else if (!this.relativeUrl || this.relativeUrl === '/' || this.relativeUrl === '') {
         classes.push('home-template');
     } else {
         classes.push('post-template');
@@ -256,7 +312,7 @@ coreHelpers.body_class = function (options) {
         classes.push('page');
     }
 
-    return coreHelpers.ghost.doFilter('body_class', classes).then(function (classes) {
+    return filters.doFilter('body_class', classes).then(function (classes) {
         var classString = _.reduce(classes, function (memo, item) { return memo + ' ' + item; }, '');
         return new hbs.handlebars.SafeString(classString.trim());
     });
@@ -281,7 +337,7 @@ coreHelpers.post_class = function (options) {
         classes.push('page');
     }
 
-    return coreHelpers.ghost.doFilter('post_class', classes).then(function (classes) {
+    return filters.doFilter('post_class', classes).then(function (classes) {
         var classString = _.reduce(classes, function (memo, item) { return memo + ' ' + item; }, '');
         return new hbs.handlebars.SafeString(classString.trim());
     });
@@ -289,19 +345,24 @@ coreHelpers.post_class = function (options) {
 
 coreHelpers.ghost_head = function (options) {
     /*jslint unparam:true*/
-    var head = [],
+    var self = this,
+        blog = config.theme(),
+        head = [],
         majorMinor = /^(\d+\.)?(\d+)/,
         trimmedVersion = this.version;
 
     trimmedVersion = trimmedVersion ? trimmedVersion.match(majorMinor)[0] : '?';
 
     head.push('<meta name="generator" content="Ghost ' + trimmedVersion + '" />');
-    head.push('<link rel="alternate" type="application/rss+xml" title="RSS" href="/rss/">');
-    if (this.path) {
-        head.push('<link rel="canonical" href="' + coreHelpers.ghost.config().url + this.path + '" />');
-    }
 
-    return coreHelpers.ghost.doFilter('ghost_head', head).then(function (head) {
+    head.push('<link rel="alternate" type="application/rss+xml" title="'
+        + _.escape(blog.title)  + '" href="' + config.paths.urlFor('rss') + '">');
+
+    return coreHelpers.url.call(self, {hash: {absolute: true}}).then(function (url) {
+        head.push('<link rel="canonical" href="' + url + '" />');
+
+        return filters.doFilter('ghost_head', head);
+    }).then(function (head) {
         var headString = _.reduce(head, function (memo, item) { return memo + '\n' + item; }, '');
         return new hbs.handlebars.SafeString(headString.trim());
     });
@@ -310,9 +371,13 @@ coreHelpers.ghost_head = function (options) {
 coreHelpers.ghost_foot = function (options) {
     /*jslint unparam:true*/
     var foot = [];
-    foot.push('<script src="/shared/vendor/jquery/jquery.js"></script>');
 
-    return coreHelpers.ghost.doFilter('ghost_foot', foot).then(function (foot) {
+    foot.push(scriptTemplate({
+        source: config.paths().subdir + '/shared/vendor/jquery/jquery.js',
+        version: coreHelpers.assetHash
+    }));
+
+    return filters.doFilter('ghost_foot', foot).then(function (foot) {
         var footString = _.reduce(foot, function (memo, item) { return memo + ' ' + item; }, '');
         return new hbs.handlebars.SafeString(footString.trim());
     });
@@ -322,16 +387,17 @@ coreHelpers.meta_title = function (options) {
     /*jslint unparam:true*/
     var title,
         blog;
-    if (_.isString(this.path)) {
-        if (!this.path || this.path === '/' || this.path === '' || this.path.match(/\/page/)) {
-            blog = coreHelpers.ghost.blogGlobals();
+
+    if (_.isString(this.relativeUrl)) {
+        if (!this.relativeUrl || this.relativeUrl === '/' || this.relativeUrl === '' || this.relativeUrl.match(/\/page/)) {
+            blog = config.theme();
             title = blog.title;
         } else {
             title = this.post.title;
         }
     }
 
-    return coreHelpers.ghost.doFilter('meta_title', title).then(function (title) {
+    return filters.doFilter('meta_title', title).then(function (title) {
         title = title || "";
         return new hbs.handlebars.SafeString(title.trim());
     });
@@ -342,16 +408,16 @@ coreHelpers.meta_description = function (options) {
     var description,
         blog;
 
-    if (_.isString(this.path)) {
-        if (!this.path || this.path === '/' || this.path === '' || this.path.match(/\/page/)) {
-            blog = coreHelpers.ghost.blogGlobals();
+    if (_.isString(this.relativeUrl)) {
+        if (!this.relativeUrl || this.relativeUrl === '/' || this.relativeUrl === '' || this.relativeUrl.match(/\/page/)) {
+            blog = config.theme();
             description = blog.description;
         } else {
             description = '';
         }
     }
 
-    return coreHelpers.ghost.doFilter('meta_description', description).then(function (description) {
+    return filters.doFilter('meta_description', description).then(function (description) {
         description = description || "";
         return new hbs.handlebars.SafeString(description.trim());
     });
@@ -366,19 +432,19 @@ coreHelpers.meta_description = function (options) {
  */
 coreHelpers.e = function (key, defaultString, options) {
     var output;
-
-    if (coreHelpers.ghost.settings('defaultLang') === 'en' && _.isEmpty(options.hash) && !coreHelpers.ghost.settings('forceI18n')) {
-        output = defaultString;
-    } else {
-        output = coreHelpers.ghost.polyglot().t(key, options.hash);
-    }
-
-    return output;
-};
-
-coreHelpers.json = function (object, options) {
-    /*jslint unparam:true*/
-    return JSON.stringify(object);
+    when.all([
+        api.settings.read('defaultLang'),
+        api.settings.read('forceI18n')
+    ]).then(function (values) {
+        if (values[0].value === 'en'
+                && _.isEmpty(options.hash)
+                && _.isEmpty(values[1].value)) {
+            output = defaultString;
+        } else {
+            output = polyglot().t(key, options.hash);
+        }
+        return output;
+    });
 };
 
 coreHelpers.foreach = function (context, options) {
@@ -451,10 +517,6 @@ coreHelpers.foreach = function (context, options) {
     return ret;
 };
 
-// ## Template driven helpers
-// Template driven helpers require that their template is loaded before they can be registered.
-coreHelpers.paginationTemplate = null;
-
 // ### Pagination Helper
 // `{{pagination}}`
 // Outputs previous and next buttons, along with info about the current page
@@ -479,7 +541,7 @@ coreHelpers.pagination = function (options) {
         errors.logAndThrowError('Invalid value, check page, pages, limit and total are numbers');
         return;
     }
-    return new hbs.handlebars.SafeString(coreHelpers.paginationTemplate(this.pagination));
+    return template.execute('pagination', this.pagination);
 };
 
 coreHelpers.helperMissing = function (arg) {
@@ -489,63 +551,128 @@ coreHelpers.helperMissing = function (arg) {
     errors.logError('Missing helper: "' + arg + '"');
 };
 
-registerHelpers = function (ghost) {
-    var paginationHelper;
+// ## Admin URL helper
+// uses urlFor to generate a URL for either the admin or the frontend.
+coreHelpers.adminUrl = function (options) {
+    var absolute = options && options.hash && options.hash.absolute,
+        // Ghost isn't a named route as currently it violates the must start-and-end with slash rule
+        context = !options || !options.hash || !options.hash.frontend ? {relativeUrl: '/ghost'} : 'home';
 
-    // Expose this so our helpers can use it in their code.
-    coreHelpers.ghost = ghost;
+    return config.paths.urlFor(context, absolute);
+};
 
-    ghost.registerThemeHelper('date', coreHelpers.date);
+coreHelpers.updateNotification = function () {
+    var output = '';
 
-    ghost.registerThemeHelper('encode', coreHelpers.encode);
+    if (config().updateCheck === false || !this.currentUser) {
+        return when(output);
+    }
 
-    ghost.registerThemeHelper('pageUrl', coreHelpers.pageUrl);
+    return api.settings.read('displayUpdateNotification').then(function (display) {
+        if (display && display.value && display.value === 'true') {
+            output = '<div class="notification-success">' +
+                'A new version of Ghost is available! Hot damn. ' +
+                '<a href="http://ghost.org/download">Upgrade now</a></div>';
+        }
 
-    ghost.registerThemeHelper('url', coreHelpers.url);
-
-    ghost.registerThemeHelper('author', coreHelpers.author);
-
-    ghost.registerThemeHelper('tags', coreHelpers.tags);
-
-    ghost.registerThemeHelper('content', coreHelpers.content);
-
-    ghost.registerThemeHelper('excerpt', coreHelpers.excerpt);
-
-    ghost.registerThemeHelper('fileStorage', coreHelpers.fileStorage);
-
-    ghost.registerThemeHelper('ghostScriptTags', coreHelpers.ghostScriptTags);
-
-    ghost.registerThemeHelper('e', coreHelpers.e);
-
-    ghost.registerThemeHelper('json', coreHelpers.json);
-
-    ghost.registerThemeHelper('foreach', coreHelpers.foreach);
-
-    ghost.registerThemeHelper('helperMissing', coreHelpers.helperMissing);
-
-    ghost.registerAsyncThemeHelper('body_class', coreHelpers.body_class);
-
-    ghost.registerAsyncThemeHelper('post_class', coreHelpers.post_class);
-
-    ghost.registerAsyncThemeHelper('meta_title', coreHelpers.meta_title);
-
-    ghost.registerAsyncThemeHelper('meta_description', coreHelpers.meta_description);
-
-    ghost.registerAsyncThemeHelper('ghost_head', coreHelpers.ghost_head);
-
-    ghost.registerAsyncThemeHelper('ghost_foot', coreHelpers.ghost_foot);
-
-    paginationHelper = ghost.loadTemplate('pagination').then(function (templateFn) {
-        coreHelpers.paginationTemplate = templateFn;
-
-        ghost.registerThemeHelper('pagination', coreHelpers.pagination);
+        return output;
     });
+};
 
-    // Return once the template-driven helpers have loaded
-    return when.join(
-        paginationHelper
-    );
+// Register an async handlebars helper for a given handlebars instance
+function registerAsyncHelper(hbs, name, fn) {
+    hbs.registerAsyncHelper(name, function (options, cb) {
+        // Wrap the function passed in with a when.resolve so it can
+        // return either a promise or a value
+        when.resolve(fn.call(this, options)).then(function (result) {
+            cb(result);
+        }).otherwise(function (err) {
+            errors.logAndThrowError(err, "registerAsyncThemeHelper: " + name);
+        });
+    });
+}
+
+// Register a handlebars helper for themes
+function registerThemeHelper(name, fn) {
+    hbs.registerHelper(name, fn);
+}
+
+// Register an async handlebars helper for themes
+function registerAsyncThemeHelper(name, fn) {
+    registerAsyncHelper(hbs, name, fn);
+}
+
+// Register a handlebars helper for admin
+function registerAdminHelper(name, fn) {
+    coreHelpers.adminHbs.registerHelper(name, fn);
+}
+
+// Register an async handlebars helper for admin
+function registerAsyncAdminHelper(name, fn) {
+    registerAsyncHelper(coreHelpers.adminHbs, name, fn);
+}
+
+
+registerHelpers = function (adminHbs, assetHash) {
+
+    // Expose hbs instance for admin
+    coreHelpers.adminHbs = adminHbs;
+
+    // Store hash for assets
+    coreHelpers.assetHash = assetHash;
+
+
+    // Register theme helpers
+    registerThemeHelper('asset', coreHelpers.asset);
+
+    registerThemeHelper('author', coreHelpers.author);
+
+    registerThemeHelper('content', coreHelpers.content);
+
+    registerThemeHelper('date', coreHelpers.date);
+
+    registerThemeHelper('encode', coreHelpers.encode);
+
+    registerThemeHelper('excerpt', coreHelpers.excerpt);
+
+    registerThemeHelper('foreach', coreHelpers.foreach);
+
+    registerThemeHelper('pageUrl', coreHelpers.pageUrl);
+
+    registerThemeHelper('pagination', coreHelpers.pagination);
+
+    registerThemeHelper('tags', coreHelpers.tags);
+
+    registerAsyncThemeHelper('body_class', coreHelpers.body_class);
+
+    registerAsyncThemeHelper('e', coreHelpers.e);
+
+    registerAsyncThemeHelper('ghost_foot', coreHelpers.ghost_foot);
+
+    registerAsyncThemeHelper('ghost_head', coreHelpers.ghost_head);
+
+    registerAsyncThemeHelper('meta_description', coreHelpers.meta_description);
+
+    registerAsyncThemeHelper('meta_title', coreHelpers.meta_title);
+
+    registerAsyncThemeHelper('post_class', coreHelpers.post_class);
+
+    registerAsyncThemeHelper('url', coreHelpers.url);
+
+
+    // Register admin helpers
+    registerAdminHelper('asset', coreHelpers.asset);
+
+    registerAdminHelper('ghostScriptTags', coreHelpers.ghostScriptTags);
+
+    registerAdminHelper('fileStorage', coreHelpers.fileStorage);
+
+    registerAdminHelper('adminUrl', coreHelpers.adminUrl);
+
+    registerAsyncAdminHelper('updateNotification', coreHelpers.updateNotification);
 };
 
 module.exports = coreHelpers;
 module.exports.loadCoreHelpers = registerHelpers;
+module.exports.registerThemeHelper = registerThemeHelper;
+module.exports.registerAsyncThemeHelper = registerAsyncThemeHelper;

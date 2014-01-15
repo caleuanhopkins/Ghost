@@ -81,6 +81,11 @@ var db = {
             role_id: {type: 'integer', nullable: false},
             permission_id: {type: 'integer', nullable: false}
         },
+        sessions: {
+            id: {type: 'string', nullable: false, primary: true},
+            expires: {type: 'bigInteger', nullable: false},
+            sess: {type: 'string', maxlength: 4096, nullable: false}
+        },
         settings: {
             id: {type: 'increments', nullable: false, primary: true},
             uuid: {type: 'string', maxlength: 36, nullable: false},
@@ -113,5 +118,12 @@ var db = {
         }
     };
 
+function isPost(jsonData) {
+    return jsonData.hasOwnProperty('html') && jsonData.hasOwnProperty('markdown')
+        && jsonData.hasOwnProperty('title') && jsonData.hasOwnProperty('slug');
+}
 
-module.exports = db;
+module.exports.tables = db;
+module.exports.checks = {
+    isPost: isPost
+};
